@@ -1,4 +1,4 @@
-import {
+﻿import {
   AccountCircle,
   Logout,
 } from "@mui/icons-material";
@@ -43,7 +43,7 @@ const Header = () => {
             fontWeight: 600,
           }}
         >
-          KoalaTech University
+          KoalaTech University - Live via Continuous Deployment
         </Typography>
 
         <Box
