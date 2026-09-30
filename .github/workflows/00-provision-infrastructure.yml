@@ -70,7 +70,13 @@ jobs:
         run: terraform validate
 
       - name: Terraform Plan
-        run: terraform plan -out=tfplan
+        run: |
+          terraform plan -out=tfplan \
+            -var="resource_group_name=${{ vars.AKS_RESOURCE_GROUP }}" \
+            -var="acr_name=${{ vars.ACR_NAME }}" \
+            -var="storage_account_name=koalatechsto88721" \
+            -var="aks_cluster_name=${{ vars.AKS_CLUSTER_NAME }}" \
+            -var="aks_dns_prefix=koalatechweek08"
 
       - name: Terraform Apply
         run: terraform apply -auto-approve tfplan
