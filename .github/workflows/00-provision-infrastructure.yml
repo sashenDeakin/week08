@@ -1,0 +1,112 @@
+name: 00 - Provision Infrastructure
+
+on:
+  # Run automatically only when the Terraform config itself changes,
+  # so an ordinary application code push doesn't re-run infrastructure
+  # provisioning.
+  push:
+    branches:
+      - main
+    paths:
+      - "terraform/**"
+      - ".github/workflows/00-provision-infrastructure.yml"
+
+  # Manual trigger, e.g. to (re)apply without a Terraform file change.
+  workflow_dispatch:
+
+jobs:
+  terraform:
+    name: Terraform Plan and Apply
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: terraform
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.7.5"
+
+      # Terraform state (terraform.tfstate) is gitignored on purpose, since
+      # it can contain sensitive values and every workflow run starts from
+      # a fresh checkout. Without persisting it somewhere, every run would
+      # start from a blank state and try to recreate resources that already
+      # exist. A GitHub Actions cache is a lightweight way to carry the
+      # state file forward between runs without standing up a separate
+      # remote backend.
+      - name: Restore Terraform state cache
+        uses: actions/cache@v4
+        with:
+          path: terraform/terraform.tfstate
+          key: terraform-state-${{ github.run_id }}
+          restore-keys: |
+            terraform-state-
+
+      # The azurerm provider automatically picks up ARM_CLIENT_ID,
+      # ARM_CLIENT_SECRET, ARM_SUBSCRIPTION_ID and ARM_TENANT_ID from the
+      # environment, so the existing AZURE_CREDENTIALS secret (already used
+      # by azure/login elsewhere in this pipeline) can be reused here
+      # without any changes to the provider block.
+      - name: Set Azure auth environment variables for Terraform
+        run: |
+          echo "ARM_CLIENT_ID=$(echo '${{ secrets.AZURE_CREDENTIALS }}' | jq -r .clientId)" >> "$GITHUB_ENV"
+          echo "ARM_CLIENT_SECRET=$(echo '${{ secrets.AZURE_CREDENTIALS }}' | jq -r .clientSecret)" >> "$GITHUB_ENV"
+          echo "ARM_SUBSCRIPTION_ID=$(echo '${{ secrets.AZURE_CREDENTIALS }}' | jq -r .subscriptionId)" >> "$GITHUB_ENV"
+          echo "ARM_TENANT_ID=$(echo '${{ secrets.AZURE_CREDENTIALS }}' | jq -r .tenantId)" >> "$GITHUB_ENV"
+
+      - name: Terraform Init
+        run: terraform init
+
+      - name: Terraform Format Check
+        run: terraform fmt -check
+        continue-on-error: true
+
+      - name: Terraform Validate
+        run: terraform validate
+
+      - name: Terraform Plan
+        run: terraform plan -out=tfplan
+
+      - name: Terraform Apply
+        run: terraform apply -auto-approve tfplan
+
+      # ---------------------------------------------------------------
+      # Cluster-level monitoring addon. This lives here, right after the
+      # AKS cluster itself is provisioned, rather than in the application
+      # deploy workflows, because Prometheus/Grafana monitor the cluster
+      # as infrastructure, not the application code path.
+      # ---------------------------------------------------------------
+      - name: Login to Azure
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Get AKS credentials
+        run: |
+          az aks get-credentials \
+            --resource-group ${{ vars.AKS_RESOURCE_GROUP }} \
+            --name ${{ vars.AKS_CLUSTER_NAME }} \
+            --overwrite-existing
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+
+      - name: Deploy Prometheus and Grafana (kube-prometheus-stack)
+        run: |
+          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+          helm repo update
+          helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
+            --namespace monitoring \
+            --create-namespace \
+            --wait \
+            --timeout 10m
+
+      - name: Verify monitoring stack
+        run: |
+          kubectl get pods -n monitoring
+          kubectl get svc -n monitoring
