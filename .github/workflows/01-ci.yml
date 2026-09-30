@@ -5,13 +5,11 @@ on:
   push:
     branches:
       - main
-  
+
   # Manual trigger for the workflow
   workflow_dispatch:
 
-
 jobs:
-
   # =========================================================
   # Backend Tests
   # =========================================================
@@ -81,7 +79,6 @@ jobs:
       AZURE_STORAGE_CONTAINER_NAME: ""
 
     steps:
-
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -101,9 +98,8 @@ jobs:
         run: |
           pytest -v
 
-
   # =========================================================
-  # Build and Push Docker Images
+  # Build, Scan and Push Docker Images
   # =========================================================
   build-and-push:
     name: Build and Push ${{ matrix.image }}
@@ -140,7 +136,6 @@ jobs:
             image: koalatech-enrollment-service
 
     steps:
-
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -159,6 +154,29 @@ jobs:
             --platform linux/amd64 \
             -t ${{ vars.ACR_LOGIN_SERVER }}/${{ matrix.image }}:${{ github.sha }} \
             ./${{ matrix.service }}
+
+      # ---------------------------------------------------------------
+      # Security scanning (DevSecOps gate). This runs right after the
+      # image is built and before it is pushed anywhere, so a
+      # vulnerability is caught before the image ever leaves the CI
+      # runner - not after it has already reached a registry or a
+      # cluster. Scoped to user-service, the one service in this
+      # project with a non-trivial third-party dependency surface
+      # (see Task 10.1P). Findings are reported but do not fail the
+      # build, since several of them are unfixed OS-level CVEs in the
+      # base image that are outside this project's control.
+      # ---------------------------------------------------------------
+      - name: Docker Scout - vulnerability scan (user-service)
+        if: matrix.service == 'user-service'
+        uses: docker/scout-action@v1
+        with:
+          command: cves,recommendations
+          image: local://${{ vars.ACR_LOGIN_SERVER }}/${{ matrix.image }}:${{ github.sha }}
+          dockerhub-user: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub-password: ${{ secrets.DOCKERHUB_TOKEN }}
+          only-severities: critical,high
+          exit-code: false
+          summary: true
 
       - name: Push Docker image with commit SHA
         run: |
